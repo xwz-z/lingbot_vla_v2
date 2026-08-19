@@ -25,7 +25,7 @@ from lingbotvla.utils.dist_utils import all_reduce
 import lingbotvla.utils.normalize as normalize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tasks.vla.train_lingbotvla import MyTrainingArguments, MyDataArguments
+from tasks.vla.train_lingbotvla import ModelArguments, MyTrainingArguments, MyDataArguments
 
 logger = helper.create_logger(__name__)
 
@@ -51,6 +51,9 @@ class NormComputeDataArguments(MyDataArguments):
 
 @dataclass
 class Arguments:
+    # Accept the model section so the same training YAML can be reused for
+    # normalization. Norm computation does not instantiate or load the model.
+    model: "ModelArguments" = field(default_factory=ModelArguments)
     data: "NormComputeDataArguments" = field(default_factory=NormComputeDataArguments)
     train: "MyTrainingArguments" = field(default_factory=MyTrainingArguments)
 
@@ -125,14 +128,7 @@ def compute_norm(dataset, batch_size, stats, state_norm_keys, acton_norm_keys, d
     all_batch_indices = get_batch_indices(data_ids, batch_size)
     total_batches = len(all_batch_indices) # Total number of batches
 
-    # With the initializer each worker initializes the dataset only once, avoiding
-    # passing it along with every task.
-    with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(dataset,)) as pool:
-        # imap_unordered returns results as soon as they are ready without preserving
-        # order, which is the most efficient. Only indices are passed now, not the
-        # whole dataset.
-        results_generator = pool.imap_unordered(worker_fn, all_batch_indices)
-
+    def consume_batches(results_generator):
         pbar = tqdm(
             results_generator,
             total=total_batches,
@@ -142,14 +138,51 @@ def compute_norm(dataset, batch_size, stats, state_norm_keys, acton_norm_keys, d
             desc=f"rank{rank}",
         )
         for batch in pbar:
+            action_is_pad = np.asarray(batch['action_is_pad'], dtype=bool)
+            if action_is_pad.ndim != 2:
+                raise ValueError(
+                    f"action_is_pad must have shape (batch, chunk), got {action_is_pad.shape}"
+                )
             for key in state_norm_keys:
                 values = np.asarray(batch[key])
                 stats[key].update(values.reshape(-1, values.shape[-1]))
             for key in acton_norm_keys:
-                values = np.asarray(batch[key]) if (not delta_norm[key] or norm_merge_chunk_dim) else np.asarray(batch[key].reshape(batch[key].shape[0], -1))
+                values = np.asarray(batch[key])
+                if values.shape[:2] != action_is_pad.shape:
+                    raise ValueError(
+                        f"{key} leading dimensions {values.shape[:2]} do not match "
+                        f"action_is_pad {action_is_pad.shape}"
+                    )
+
+                if delta_norm[key] and not norm_merge_chunk_dim:
+                    # Per-horizon delta statistics require fixed-length vectors.
+                    # Only complete chunks can be represented without allowing
+                    # episode-end padding to bias individual horizons.
+                    complete_chunks = ~action_is_pad.any(axis=1)
+                    values = values[complete_chunks]
+                    if values.shape[0] == 0:
+                        continue
+                    values = values.reshape(values.shape[0], -1)
+                else:
+                    # The default merged statistics treat every valid action
+                    # timestep as one observation and exclude clipped tail pads.
+                    values = values[~action_is_pad]
+                    if values.shape[0] == 0:
+                        continue
+
                 stats[key].update(values.reshape(-1, values.shape[-1]))
 
-    del pool
+    if num_workers > 0:
+        # Each worker initializes the dataset once; only batch indices are sent
+        # for subsequent tasks.
+        with mp.Pool(processes=num_workers, initializer=init_worker, initargs=(dataset,)) as pool:
+            consume_batches(pool.imap_unordered(worker_fn, all_batch_indices))
+    else:
+        # Match DataLoader semantics: num_workers=0 means load synchronously in
+        # the current process instead of trying to construct mp.Pool(0).
+        init_worker(dataset)
+        consume_batches(map(worker_fn, all_batch_indices))
+
     del dataset
 
 def get_norm_stats(stats, delta_norm, chunk_size, norm_merge_chunk_dim=False):

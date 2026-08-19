@@ -22,6 +22,112 @@ from . import logging
 logger = logging.get_logger(__name__)
 
 
+_EXPERT_ONLY_VLM_PATH = "model.qwenvl_with_expert.qwenvl"
+_EXPERT_ONLY_ACTION_EXPERT_PATH = "model.qwenvl_with_expert.qwen_expert"
+_EXPERT_ONLY_PROJECTION_PATHS = (
+    "model.state_proj",
+    "model.action_in_proj",
+    "model.action_out_proj",
+    "model.action_time_mlp_in",
+    "model.action_time_mlp_out",
+)
+
+
+def _get_submodule(model: nn.Module, path: str) -> nn.Module:
+    module = model
+    for name in path.split("."):
+        if not hasattr(module, name):
+            raise RuntimeError(f"Expert-only audit expected model submodule {path!r}, but it was not found.")
+        module = getattr(module, name)
+    if not isinstance(module, nn.Module):
+        raise RuntimeError(f"Expert-only audit expected {path!r} to be a torch module.")
+    return module
+
+
+def _parameter_count(module: nn.Module, trainable_only: bool = False) -> int:
+    return sum(
+        parameter.numel()
+        for parameter in module.parameters()
+        if not trainable_only or parameter.requires_grad
+    )
+
+
+def audit_expert_only_parameters(model: nn.Module):
+    """Return parameter counts for the native LingBot expert-only training boundary."""
+    vlm = _get_submodule(model, _EXPERT_ONLY_VLM_PATH)
+    action_expert = _get_submodule(model, _EXPERT_ONLY_ACTION_EXPERT_PATH)
+    projection_modules = [_get_submodule(model, path) for path in _EXPERT_ONLY_PROJECTION_PATHS]
+
+    total = _parameter_count(model)
+    trainable = _parameter_count(model, trainable_only=True)
+    vlm_total = _parameter_count(vlm)
+    vlm_trainable = _parameter_count(vlm, trainable_only=True)
+    action_expert_total = _parameter_count(action_expert)
+    action_expert_trainable = _parameter_count(action_expert, trainable_only=True)
+    projection_trainable = sum(_parameter_count(module, trainable_only=True) for module in projection_modules)
+
+    return {
+        "total": total,
+        "trainable": trainable,
+        "vlm_total": vlm_total,
+        "vlm_trainable": vlm_trainable,
+        "action_expert_total": action_expert_total,
+        "action_expert_trainable": action_expert_trainable,
+        "projection_trainable": projection_trainable,
+        "auxiliary_trainable": trainable - action_expert_trainable - projection_trainable,
+    }
+
+
+def validate_expert_only_parameters(model: nn.Module):
+    """Fail fast if the model does not match the intended expert-only trainable boundary."""
+    vlm = _get_submodule(model, _EXPERT_ONLY_VLM_PATH)
+    action_expert = _get_submodule(model, _EXPERT_ONLY_ACTION_EXPERT_PATH)
+    projection_modules = [_get_submodule(model, path) for path in _EXPERT_ONLY_PROJECTION_PATHS]
+
+    leaked_vlm_parameters = [name for name, parameter in vlm.named_parameters() if parameter.requires_grad]
+    if leaked_vlm_parameters:
+        preview = ", ".join(leaked_vlm_parameters[:5])
+        raise RuntimeError(
+            "Expert-only training requires the complete Qwen-VL backbone (including vision) to be frozen; "
+            f"found {len(leaked_vlm_parameters)} trainable parameter(s), for example: {preview}."
+        )
+
+    if _parameter_count(action_expert, trainable_only=True) == 0:
+        raise RuntimeError("Expert-only training found no trainable parameters in the action expert.")
+
+    frozen_projection_paths = [
+        path
+        for path, module in zip(_EXPERT_ONLY_PROJECTION_PATHS, projection_modules)
+        if _parameter_count(module, trainable_only=True) == 0
+    ]
+    if frozen_projection_paths:
+        raise RuntimeError(
+            "Expert-only training requires the action/state projection modules to remain trainable; "
+            f"fully frozen modules: {', '.join(frozen_projection_paths)}."
+        )
+
+    stats = audit_expert_only_parameters(model)
+    if stats["trainable"] == 0:
+        raise RuntimeError("Expert-only training found no trainable model parameters.")
+    return stats
+
+
+def format_expert_only_parameter_stats(stats) -> str:
+    """Format the startup audit without dumping every parameter name."""
+    trainable_ratio = 100.0 * stats["trainable"] / max(1, stats["total"])
+    return "\n".join(
+        [
+            "Expert-only parameter audit:",
+            f"  total parameters:             {stats['total']:,}",
+            f"  trainable parameters:         {stats['trainable']:,} ({trainable_ratio:.2f}%)",
+            f"  frozen Qwen-VL parameters:    {stats['vlm_total'] - stats['vlm_trainable']:,}",
+            f"  trainable action expert:      {stats['action_expert_trainable']:,}",
+            f"  trainable action projections: {stats['projection_trainable']:,}",
+            f"  trainable auxiliary modules:  {stats['auxiliary_trainable']:,}",
+        ]
+    )
+
+
 def pretty_print_trainable_parameters(model: nn.Module):
     trainable_parameters = []
     for n, p in model.named_parameters():

@@ -1,0 +1,36 @@
+states:
+  - observation.state.end.position:
+      origin_keys: observation.state.end.position
+
+  - observation.state.effector.position:
+      origin_keys: observation.state.effector.position
+
+  - observation.state.base.position:
+      origin_keys: observation.state.base.position
+
+actions:
+  # Relative TCP target: world-frame translation delta and q_state^-1 * q_action.
+  - action.end.position:
+      origin_keys: action.end.position
+      subtract_state: true
+      relative_type: quaternion_world
+
+  - action.effector.position:
+      origin_keys: action.effector.position
+      subtract_state: false
+
+  - action.base.position:
+      origin_keys: action.base.position
+      subtract_state: false
+
+images:
+  - observation.images.camera_top:
+      origin_keys: observation.images.cam0
+
+  - observation.images.camera_wrist_left:
+      origin_keys: observation.images.cam1
+
+  - observation.images.camera_wrist_right:
+      origin_keys: observation.images.cam2
+
+norm_stats: assets/norm_stats/unitree_mobile_xyzquat_robust_meanstd.json

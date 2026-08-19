@@ -1,0 +1,34 @@
+states:
+  - observation.state.end.position:
+      origin_keys: observation.state.end.position
+
+  - observation.state.effector.position:
+      origin_keys:
+        - observation.state:
+            start: 7
+            end: 8
+        - observation.state:
+            start: 15
+            end: 16
+
+actions:
+  - action.end.position:
+      origin_keys: action.end.position
+      subtract_state: false
+      relative_type: quaternion_world
+
+  - action.effector.position:
+      origin_keys:
+        - action:
+            start: 7
+            end: 8
+        - action:
+            start: 15
+            end: 16
+      subtract_state: false
+
+images:
+  - observation.images.camera_top:
+      origin_keys: observation.images.cam0
+
+norm_stats: assets/norm_stats/nero_dual_arm_xyzquat.json

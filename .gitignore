@@ -1,0 +1,17 @@
+# Python/runtime products
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Local logs and generated reports
+*.log
+log.txt
+events.out.tfevents.*
+/artifacts/
+
+# External datasets, weights, and training outputs
+/data/
+/weights/
+/outputs/

@@ -242,3 +242,7 @@ This project is licensed under the [Apache-2.0 License](LICENSE).
 ## Acknowledgement
 
 We sincerely thank the developers of [VeOmni](https://arxiv.org/abs/2508.02317) and [LeRobot](https://github.com/huggingface/lerobot). This project benefits from their contributions to the open-source community.
+
+## Local Unitree training reproduction
+
+This fork adds a minimal, tested Unitree Mobile Expert-only training path and a one-step Nero Dual Arm smoke path. Start with [docs/TRAINING_REPRODUCTION.md](docs/TRAINING_REPRODUCTION.md) for the implementation tree, external path layout, dataset conversion, normalization validation, training commands, and tests.

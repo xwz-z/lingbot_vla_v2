@@ -51,6 +51,12 @@ class RunningStats:
         Args:
             vectors (np.ndarray): A 2D array where each row is a new vector.
         """
+        # Accumulate in float64 even when dataset tensors are float32.  Using
+        # float32 for E[x^2] - E[x]^2 loses all variance for near-constant
+        # channels such as quaternion w, and large repeated batches can also
+        # drift the mean of truly constant controls (for example a gripper).
+        batch = np.asarray(batch, dtype=np.float64)
+
         if batch.ndim == 1:
             batch = batch.reshape(-1, 1)
 

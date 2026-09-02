@@ -22,6 +22,118 @@ Compared with LingBot-VLA 1.0, LingBot-VLA 2.0 improves three core capabilities:
   <img src="assets/lingbot_vla2_framework.png" width="86%">
 </p>
 
+## Nero / Unitree Real-Robot Demo
+
+This fork contains the implementation used to run a LingBot-VLA 2.0 real-robot
+demo on a Nero/Unitree mobile dual-arm robot. The tested deployment profile is
+one NVIDIA GeForce RTX 4090, BF16 inference, a 50-action output chunk, and 10
+diffusion/denoising steps.
+
+### Runtime boundary
+
+The demo uses the self-contained service in this repository:
+
+```text
+Unitree client (mobile_tcp23)
+  -> real_world_inference HTTP service
+  -> mobile_tcp23 / LingBot representation adapter
+  -> deploy.LingbotVLAv2Server
+  -> LingBot-VLA 2.0 checkpoint
+```
+
+Despite its directory name, `real_world_inference/` is a standalone inference
+implementation in this LingBot-VLA repository. It directly wraps the official
+[`deploy/lingbot_vla_v2_policy.py`](deploy/lingbot_vla_v2_policy.py) policy and
+does not depend on the separately maintained generic `real_world_inference`
+framework. This keeps the Demo repository independently runnable while retaining
+the same robot-side `mobile_tcp23` contract.
+
+### Robot adaptation
+
+The robot client sends three RGB camera streams (`head_fpv`, `left_hand`, and
+`right_hand`) together with `mobile_state[26]`. The state contains two
+`xyz+Rot6D+gripper` arm states, map-frame `x/y/yaw`, and base
+`vx/wz/height`. The adapter:
+
+- converts both TCP rotations from Rot6D to quaternion `xyzw` and preserves
+  quaternion sign continuity between requests;
+- maps the three cameras to LingBot `cam0/cam1/cam2` inputs;
+- intentionally leaves map-frame `x/y/yaw` outside the model input and maps
+  `vx/wz/height` to the mobile-base feature;
+- converts LingBot's dual-arm quaternion actions back to Rot6D; and
+- returns 20 arm/gripper dimensions in `actions` plus
+  `[vx, vy=0, wz, height]` in `base_action`.
+
+The model-side robot mapping is defined in
+[`configs/robot_configs/nero_mobile_xyzquat.yaml`](configs/robot_configs/nero_mobile_xyzquat.yaml).
+It uses relative TCP targets: world-frame translation deltas and
+`q_state^-1 * q_action` rotations. Gripper and base targets remain absolute.
+
+### Demo implementation files
+
+| Responsibility | Files |
+| --- | --- |
+| Unitree-compatible HTTP endpoints and wire contract | [`real_world_inference/inference_service.py`](real_world_inference/inference_service.py), [`real_world_inference/server.py`](real_world_inference/server.py) |
+| State, image, pose, and action adaptation | [`real_world_inference/policy_adapter.py`](real_world_inference/policy_adapter.py), [`real_world_inference/pose_transforms.py`](real_world_inference/pose_transforms.py) |
+| Demo runtime configuration | [`real_world_inference/config/mobile_transfer_lingbot_new40_tcp23.json`](real_world_inference/config/mobile_transfer_lingbot_new40_tcp23.json) |
+| LingBot policy loading and native inference | [`deploy/lingbot_vla_v2_policy.py`](deploy/lingbot_vla_v2_policy.py) |
+| Robot feature mapping and normalization | [`configs/robot_configs/nero_mobile_xyzquat.yaml`](configs/robot_configs/nero_mobile_xyzquat.yaml), [`assets/norm_stats/nero_mobile_xyzquat_robust_meanstd.json`](assets/norm_stats/nero_mobile_xyzquat_robust_meanstd.json) |
+| Expert-only post-training configuration | [`configs/vla/real_robot/nero_mobile_xyzquat_expert_only_robust_norm.yaml`](configs/vla/real_robot/nero_mobile_xyzquat_expert_only_robust_norm.yaml) |
+| Dataset conversion and statistics preparation | [`scripts/convert_mobile_transfer_to_lingbot_v3.py`](scripts/convert_mobile_transfer_to_lingbot_v3.py), [`scripts/build_robust_meanstd_stats.py`](scripts/build_robust_meanstd_stats.py), [`scripts/validate_nero_mobile_norm_stats.py`](scripts/validate_nero_mobile_norm_stats.py) |
+| Server launcher and protocol tests | [`real_world_inference/start_server.sh`](real_world_inference/start_server.sh), [`tests/test_unitree_lingbot_inference.py`](tests/test_unitree_lingbot_inference.py) |
+
+The post-training path freezes the Qwen/VLM backbone and trains the action
+expert plus the state/action projections. The local changes also allow an
+explicit normalization-statistics file and exclude padded action timesteps from
+the training loss, which are required for consistent 50-step mobile-action
+chunks.
+
+### RTX 4090 launch
+
+First edit the following fields in
+[`real_world_inference/config/mobile_transfer_lingbot_new40_tcp23.json`](real_world_inference/config/mobile_transfer_lingbot_new40_tcp23.json):
+
+- `policy.checkpoint_dir`: the post-training `hf_ckpt` directory;
+- `policy.norm_stats_path`: the matching normalization JSON;
+- `policy.task_prompt`: the instruction used when the client does not send one.
+
+Then launch the standalone server on GPU 0:
+
+```bash
+cd /path/to/lingbot-vla-v2
+conda activate lingbotvla
+
+export CUDA_VISIBLE_DEVICES=0
+export QWEN3VL_PATH=/path/to/Qwen3-VL-4B-Instruct
+export LINGBOT_INFERENCE_PYTHON="$CONDA_PREFIX/bin/python"
+export REAL_WORLD_INFERENCE_CONFIG=real_world_inference/config/mobile_transfer_lingbot_new40_tcp23.json
+
+# Validate paths, protocol configuration, and Python modules without loading the model.
+bash real_world_inference/start_server.sh --check
+
+# Start HTTP inference on the host and port declared in the JSON (default: 0.0.0.0:8027).
+bash real_world_inference/start_server.sh
+```
+
+The client can use `GET /health`, `POST /handshake`, and `POST /infer`. The
+request may be JSON with base64 images or multipart form data with JPEG image
+parts.
+
+### Diffusion steps and RTC status
+
+The only inference-side optimization used for this Demo is controlling the
+number of diffusion/denoising steps. In real-robot testing, 50 denoising steps
+gave mediocre results, while 10 steps remained usable and provided more latency
+headroom for future real-time chunking (RTC). The current model default is
+therefore `num_steps = 10` in
+[`configuration_lingbot_vla.py`](lingbotvla/models/vla/lingbot_vla/configuration_lingbot_vla.py).
+
+`num_steps = 10` is the number of denoising iterations; it is independent of
+`target_chunk_size = 50`, which is the number of actions returned per inference
+request. RTC correction/reuse of a previously executing action chunk is not
+implemented in this Demo yet; the current service performs direct chunk
+inference and keeps the protocol boundary ready for that follow-up work.
+
 ## News
 
 - **[2026-07-08]** LingBot-VLA 2.0 technical report and pre-trained weights are prepared.

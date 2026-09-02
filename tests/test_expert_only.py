@@ -79,6 +79,16 @@ class ExpertOnlyConfigTest(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "configs/vla/real_robot/unitree_mobile_xyzquat_expert_only.yaml"
         )
+        self._assert_approved_settings(config_path)
+
+    def test_real_robot_template_preserves_approved_training_settings(self):
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs/vla/real_robot/real_robot_expert_only.yaml"
+        )
+        self._assert_approved_settings(config_path)
+
+    def _assert_approved_settings(self, config_path: Path):
         config_text = config_path.read_text(encoding="utf-8")
 
         for approved_setting in (

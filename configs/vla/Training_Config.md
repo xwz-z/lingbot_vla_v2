@@ -406,6 +406,18 @@ If you also set `global_batch_size` explicitly, it must be consistent with the c
 | `enable_fp32` | bool | `false` | Use float32 precision for the action expert. |
 | `enable_resume` | bool | `false` | Automatically resume training from the latest checkpoint in `output_dir`. |
 
+### Train — Expert-only Fine-tuning
+
+The real-robot Expert-only template is configs/vla/real_robot/real_robot_expert_only.yaml. It preserves the official real-robot losses, MoE layout, Muon optimizer, DCP checkpointing, future-image supervision, and base learning rate 5e-5; only the trainable boundary changes.
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| freeze_vision_encoder | true | Explicitly keeps the vision encoder frozen. |
+| train_expert_only | true | Freezes the complete Qwen-VL backbone. |
+| train_state_proj | true | Keeps state projection trainable together with the action expert and action projections. |
+
+Training performs a startup audit and aborts if any Qwen-VL parameter is trainable or if the action expert/action projections are unexpectedly frozen.
+
 ### Train — MoE Parameters
 
 | Parameter | Type | Default | Description |

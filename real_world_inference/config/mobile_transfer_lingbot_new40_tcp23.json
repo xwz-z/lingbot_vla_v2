@@ -1,0 +1,27 @@
+{
+  "_note": {
+    "wire_contract": "Accept mobile_state[26] and head_fpv/left_hand/right_hand; return base_link -> Dex1 TCP pose20 plus base_action[vx,vy,wz,height].",
+    "model_contract": "LingBot state/action use dual xyz+quaternion(xyzw), two grippers, and base vx/wz/height. map x/y/yaw remain on the wire but are intentionally not model inputs."
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8027
+  },
+  "policy": {
+    "inference_format": "mobile_tcp23",
+    "action_dim": 23,
+    "checkpoint_dir": "/data0/xieweize/checkpoints/lingbotvla_robust_meanstd/checkpoints/global_step_40000/hf_ckpt",
+    "norm_stats_path": "/data2/xieweize/project/lingbot-vla-v2/assets/norm_stats/nero_mobile_xyzquat_robust_meanstd.json",
+    "robot_name": "nero_mobile_xyzquat",
+    "task_prompt": "Approach the microwave, open the microwave door with the left hand, place the cup from on top of the microwave inside, and close the door.",
+    "target_chunk_size": 50,
+    "use_bf16": true,
+    "use_fp32": false,
+    "use_compile": false,
+    "image_inputs": {
+      "head_fpv": "head_fpv",
+      "left_hand": "left_hand",
+      "right_hand": "right_hand"
+    }
+  }
+}

@@ -100,6 +100,7 @@ class PolicyPreprocessMixin:
         use_compile: bool = False,
         capture_time: bool = False,
         sample_compile_fn: callable = None,
+        noise: Optional[Tensor] = None,
     ) -> Tensor:
         """Run one model forward for a batch of already-transformed observations.
 
@@ -131,6 +132,20 @@ class PolicyPreprocessMixin:
         if state.ndim == 1:
             state = state.unsqueeze(0)
 
+        if noise is not None:
+            if noise.ndim == 2:
+                noise = noise.unsqueeze(0)
+            expected_shape = (
+                state.shape[0],
+                self.model.config.n_action_steps,
+                self.model.config.max_action_dim,
+            )
+            if tuple(noise.shape) != expected_shape:
+                raise ValueError(
+                    f"noise must have shape {expected_shape}, got {tuple(noise.shape)}"
+                )
+            noise = noise.to(dtype=dtype, device=device)
+
         if capture_time:
             with torch.inference_mode():
                 for _ in range(3):
@@ -140,6 +155,7 @@ class PolicyPreprocessMixin:
                             lang_tokens.to(device=device),
                             lang_masks.to(device=device),
                             state.to(dtype=dtype, device=device),
+                            noise=noise,
                             image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
                     )
                 torch.cuda.synchronize()
@@ -155,6 +171,7 @@ class PolicyPreprocessMixin:
                                     lang_tokens.to(device=device),
                                     lang_masks.to(device=device),
                                     state.to(dtype=dtype, device=device),
+                                    noise=noise,
                                     image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
                     )
                     ends[i].record()
@@ -168,6 +185,7 @@ class PolicyPreprocessMixin:
                             lang_tokens.to(device=device),
                             lang_masks.to(device=device),
                             state.to(dtype=dtype, device=device),
+                            noise=noise,
                             image_grid_thw=self._to_device_image_grid_thw(image_grid_thw, device),
             )
 
@@ -336,7 +354,7 @@ class LingbotVLAv2Server:
 
         return self.vla
 
-    def reset(self, robo_name, path_to_pi_model = None) -> None:
+    def reset(self, robo_name=None, path_to_pi_model = None, robot_config_path=None) -> None:
         if path_to_pi_model is not None:
             self.vla = self.load_vla(path_to_pi_model)
             if self.use_bf16:
@@ -350,7 +368,7 @@ class LingbotVLAv2Server:
         self.last_action_chunk = None
         self.last_normalized_action_chunk = None
 
-        robot_config = f'configs/robot_configs/{robo_name}.yaml'
+        robot_config = robot_config_path or f'configs/robot_configs/{robo_name}.yaml'
         
         with open(robot_config, 'r') as f:
           self.robot_config = yaml.safe_load(f)
@@ -432,7 +450,7 @@ class LingbotVLAv2Server:
             return torch.stack(padded, dim=0)
 
         raise ValueError(f"Cannot batch tensors with different shapes: {shapes}")
-    def _infer_batch(self, observations, return_normalized=False):
+    def _infer_batch(self, observations, return_normalized=False, noise=None):
         if not isinstance(observations, (list, tuple)) or len(observations) == 0:
             raise ValueError("batch observation must be a non-empty list")
         applied = [self._prepare_model_input(obs) for obs in observations] # bsize, dict{key }
@@ -451,6 +469,7 @@ class LingbotVLAv2Server:
             self.use_compile,
             capture_time=False,
             sample_compile_fn = self.sample_actions_fn,
+            noise=noise,
         )
         
         unnormalized_actions = self._unapply_batched_actions(applied, actions)
@@ -458,7 +477,7 @@ class LingbotVLAv2Server:
             return unnormalized_actions, actions
         return unnormalized_actions
         
-    def infer(self, observation, center_crop=True, return_normalized=False):
+    def infer(self, observation, center_crop=True, return_normalized=False, noise=None):
         """Generates an action with the VLA policy."""
         # (If trained with image augmentations) Center crop image and then resize back up to original size.
         # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
@@ -484,9 +503,10 @@ class LingbotVLAv2Server:
                 unnormalized_actions, normalized_actions = self._infer_batch(
                     observations,
                     return_normalized=True,
+                    noise=noise,
                 )
             else:
-                unnormalized_actions = self._infer_batch(observations)
+                unnormalized_actions = self._infer_batch(observations, noise=noise)
                 normalized_actions = None
             if self.use_length > 0:
                 for output_key in unnormalized_actions.keys():
